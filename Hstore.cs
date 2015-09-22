@@ -9,6 +9,8 @@ namespace Halak
 {
     public sealed class Hstore
     {
+        public static readonly Hstore Empty = new Hstore();
+
         private delegate Tuple<string[], string[]> Serialize(object items);
         private static readonly ConcurrentDictionary<Type, Serialize> serializeMethods;
 
@@ -72,7 +74,25 @@ namespace Halak
         {
             var keyValues = serializeMethods.GetOrAdd(items.GetType(), BuildSerializeMethod)(items);
             keys = keyValues.Item1;
-            keys = keyValues.Item2;
+            values = keyValues.Item2;
+        }
+
+        private Hstore(string[] keys, string[] values)
+        {
+            this.keys = keys;
+            this.values = values;
+        }
+
+        private Hstore(List<KeyValuePair<string, string>> mutableKeyValues)
+        {
+            keys = new string[mutableKeyValues.Count];
+            values = new string[mutableKeyValues.Count];
+
+            for (int i = 0; i < keys.Length; i++)
+            {
+                keys[i] = mutableKeyValues[i].Key;
+                values[i] = mutableKeyValues[i].Value;
+            }
         }
 
         static Hstore()
@@ -107,15 +127,25 @@ namespace Halak
 
         public Hstore Concat(Hstore hstore)
         {
-            throw new NotImplementedException();
+            var mutableItems = CreateMutableItems(hstore.keys.Length);
+            for (int i = 0; i < hstore.keys.Length; i++)
+            {
+                var index = IndexOf(hstore.keys[i]);
+                if (index != -1)
+                    mutableItems[index] = new KeyValuePair<string, string>(hstore.keys[i], hstore.values[i]);
+                else
+                    mutableItems.Add(new KeyValuePair<string, string>(hstore.keys[i], hstore.values[i]));
+            }
+
+            return new Hstore(mutableItems);
         }
 
         public bool Contains(Hstore hstore)
         {
             for (int i = 0; i < hstore.keys.Length; i++)
             {
-                var index = IndexOf(hstore.keys[i]);
-                if (index == -1 || values[index] != hstore.values[i])
+                var index = IndexOf(hstore.keys[i], hstore.values[i]);
+                if (index == -1)
                     return false;
             }
 
@@ -169,29 +199,112 @@ namespace Halak
             return -1;
         }
 
+        private int IndexOf(string key, string value)
+        {
+            var index = IndexOf(key);
+            if (index != -1 && values[index] == value)
+                return index;
+            else
+                return -1;
+        }
+
         public Hstore Delete(string key)
         {
-            throw new NotImplementedException();
+            var index = IndexOf(key);
+            if (index != -1)
+            {
+                var mutableItems = CreateMutableItems();
+                mutableItems.RemoveAt(index);
+                return new Hstore(mutableItems);
+            }
+            else
+                return this;
         }
 
         public Hstore Delete(params string[] keys)
         {
-            throw new NotImplementedException();
+            var mutableItems = CreateMutableItems();
+            for (int i = 0; i < keys.Length; i++)
+            {
+                var key = keys[i];
+                for (int k = 0; k < mutableItems.Count; k++)
+                {
+                    if (mutableItems[k].Key == key)
+                    {
+                        mutableItems.RemoveAt(k);
+                        break;
+                    }
+                }
+            }
+
+            return new Hstore(mutableItems);
         }
 
         public Hstore Delete(Hstore hstore)
         {
-            throw new NotImplementedException();
+            var mutableItems = CreateMutableItems();
+            for (int i = 0; i < hstore.keys.Length; i++)
+            {
+                var key = hstore.keys[i];
+                for (int k = 0; k < mutableItems.Count; k++)
+                {
+                    if (mutableItems[k].Key == key && mutableItems[k].Value == hstore.values[i])
+                    {
+                        mutableItems.RemoveAt(k);
+                        break;
+                    }
+                }
+            }
+
+            return new Hstore(mutableItems);
         }
 
         public Hstore Replace(Hstore hstore)
         {
-            throw new NotImplementedException();
+            var mutableKeys = new string[keys.Length];
+            var mutableValues = new string[values.Length];
+            var modified = false;
+
+            keys.CopyTo(mutableKeys, 0);
+            values.CopyTo(mutableValues, 0);
+
+            for (int i = 0; i < hstore.keys.Length; i++)
+            {
+                var key = hstore.keys[i];
+                for (int k = 0; k < mutableKeys.Length; k++)
+                {
+                    if (mutableKeys[k] == key)
+                    {
+                        mutableValues[k] = hstore.values[i];
+                        modified = true;
+                        break;
+                    }
+                }
+            }
+
+            if (modified)
+                return new Hstore(mutableKeys, mutableValues);
+            else
+                return this;
         }
 
         public Hstore Slice(params string[] keys)
         {
-            throw new NotImplementedException();
+            var mutableItems = new List<KeyValuePair<string, string>>(keys.Length);
+            for (int i = 0; i < keys.Length; i++)
+            {
+                var key = keys[i];
+                for (int k = 0; k < this.keys.Length; k++)
+                {
+                    if (this.keys[k] == key)
+                    {
+                        mutableItems.Add(new KeyValuePair<string, string>(key, values[k]));
+                        break;
+                    }
+                }
+            }
+
+            return new Hstore(mutableItems);
         }
 
         public override int GetHashCode()
@@ -304,6 +417,15 @@ namespace Halak
                 result[i] = new KeyValuePair<string, string>(keys[i], values[i]);
 
             return result;
+        }
+
+        private List<KeyValuePair<string, string>> CreateMutableItems(int capacityIncrement = 0)
+        {
+            var mutableItems = new List<KeyValuePair<string, string>>(keys.Length + capacityIncrement);
+            for (int i = 0; i < keys.Length; i++)
+                mutableItems.Add(new KeyValuePair<string, string>(keys[i], values[i]));
+
+            return mutableItems;
         }
 
         private int CalculateCapacity(int defaultCapacityPerEntry)

@@ -1,8 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace Halak
 {
@@ -10,6 +8,12 @@ namespace Halak
     {
         static void Main(string[] args)
         {
+            var a = Hstore.Parse("foo=>bar,baz=>whatever");
+            Trace.Assert(a["foo"] == "bar");
+            Trace.Assert(a["baz"] == "whatever");
+
+            var b = Hstore.Parse("'\"1-a\" => \"anything at all\"'::hstore");
+            Trace.Assert(b["1-a"] == "anything at all");
         }
     }
 }

@@ -1,21 +1,28 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace Halak
 {
-    public sealed class Hstore
+    /// <summary>
+    /// Lightweight Hstore class for Postgresql.
+    /// </summary>
+    /// <see cref="http://www.postgresql.org/docs/9.4/static/hstore.html"/>
+    public sealed class Hstore : IReadOnlyDictionary<string, string>, IEquatable<Hstore>
     {
+        private delegate Tuple<string[], string[]> Convert(object items);
+        
         public static readonly Hstore Empty = new Hstore();
-
-        private delegate Tuple<string[], string[]> Serialize(object items);
-        private static readonly ConcurrentDictionary<Type, Serialize> serializeMethods;
+        private static readonly ConcurrentDictionary<Type, Convert> convertMethods;
 
         private readonly string[] keys;
         private readonly string[] values;
+
+        public int Count => keys.Length;
 
         public string[] Keys => keys;
         public string[] Values => values;
@@ -23,8 +30,12 @@ namespace Halak
         public HashSet<string> KeysAsSet => new HashSet<string>(keys);
         public HashSet<string> ValuesAsSet => new HashSet<string>(values);
 
+        IEnumerable<string> IReadOnlyDictionary<string, string>.Keys => keys;
+        IEnumerable<string> IReadOnlyDictionary<string, string>.Values => values;
+
         public string this[string key] => Get(key);
 
+        #region Constructors
         public Hstore()
         {
             keys = new string[0];
@@ -38,6 +49,9 @@ namespace Halak
             values = new string[items.Count];
             foreach (var e in items)
             {
+                if (e.Key == null)
+                    throw new ArgumentNullException("key");
+
                 keys[index] = e.Key;
                 values[index] = e.Value.value;
                 index++;
@@ -51,6 +65,9 @@ namespace Halak
             values = new string[items.Count];
             foreach (var e in items)
             {
+                if (e.Key == null)
+                    throw new ArgumentNullException("key");
+
                 keys[index] = e.Key;
                 values[index] = e.Value.ToString();
                 index++;
@@ -64,6 +81,9 @@ namespace Halak
             values = new string[items.Count];
             foreach (var e in items)
             {
+                if (e.Key == null)
+                    throw new ArgumentNullException("key");
+
                 keys[index] = e.Key;
                 values[index] = e.Value;
                 index++;
@@ -72,7 +92,7 @@ namespace Halak
 
         public Hstore(object items)
         {
-            var keyValues = serializeMethods.GetOrAdd(items.GetType(), BuildSerializeMethod)(items);
+            var keyValues = convertMethods.GetOrAdd(items.GetType(), BuildConvertMethod)(items);
             keys = keyValues.Item1;
             values = keyValues.Item2;
         }
@@ -83,28 +103,203 @@ namespace Halak
             this.values = values;
         }
 
-        private Hstore(List<KeyValuePair<string, string>> mutableKeyValues)
+        private Hstore(List<KeyValuePair<string, string>> mutableItems)
         {
-            keys = new string[mutableKeyValues.Count];
-            values = new string[mutableKeyValues.Count];
+            keys = new string[mutableItems.Count];
+            values = new string[mutableItems.Count];
 
             for (int i = 0; i < keys.Length; i++)
             {
-                keys[i] = mutableKeyValues[i].Key;
-                values[i] = mutableKeyValues[i].Value;
+                keys[i] = mutableItems[i].Key;
+                values[i] = mutableItems[i].Value;
             }
         }
 
         static Hstore()
         {
-            serializeMethods = new ConcurrentDictionary<Type, Serialize>();
+            convertMethods = new ConcurrentDictionary<Type, Convert>();
         }
+        #endregion
 
+        #region Parse
         public static Hstore Parse(string s)
         {
-            throw new NotImplementedException();
+            s = s.Trim();
+
+            if (s.StartsWith("'"))
+            {
+                if (s.EndsWith("'::hstore", StringComparison.OrdinalIgnoreCase))
+                    s = s.Substring(1, s.Length - 10).Trim();
+                else if (s.EndsWith("'"))
+                    s = s.Substring(1, s.Length - 2).Trim();
+                else
+                    throw new ArgumentException(s);
+            }
+
+            var mutableItems = new List<KeyValuePair<string, string>>(16);
+            var cursor = 0;
+            while (cursor < s.Length)
+            {
+                int keyStart;
+                int keyEnd;
+                if (s[cursor] == '"')
+                {
+                    keyStart = ++cursor;
+                    cursor = SkipWhile(s, cursor, '"', true);
+                    keyEnd = cursor++;
+                }
+                else
+                {
+                    keyStart = cursor;
+                    cursor = SkipWhile(s, cursor, '=', true);
+                    keyEnd = cursor++;
+                    if (s[cursor] != '>')
+                        throw new ArgumentException(s);
+                }
+
+                cursor = SkipWhiteSpaces(s, cursor, true);
+
+                int valueStart;
+                int valueEnd;
+                bool valueIsNullable = false;
+                if (s[cursor] == '"')
+                {
+                    valueStart = ++cursor;
+                    cursor = SkipWhile(s, cursor, '"', true);
+                    valueEnd = cursor++;
+                }
+                else
+                {
+                    valueStart = cursor;
+                    cursor = SkipWhile(s, cursor, ',', false);
+                    valueEnd = cursor++;
+                    valueIsNullable = true;
+                }
+
+                mutableItems.Add(
+                    new KeyValuePair<string, string>(
+                        Decode(s.Substring(keyStart, keyEnd - keyStart)),
+                        Decode(s.Substring(valueStart, valueEnd - valueStart), valueIsNullable)));
+
+                cursor = SkipWhiteSpaces(s, cursor, false);
+            }
+
+            return new Hstore(mutableItems);
         }
 
+        public static bool TryParse(string s, out Hstore hstore)
+        {
+            try
+            {
+                hstore = Parse(s);
+                return true;
+            }
+            catch (Exception)
+            {
+                hstore = null;
+                return false;
+            }
+        }
+
+        private static int SkipWhiteSpaces(string s, int cursor, bool exceptionIfEnded)
+        {
+            while (cursor < s.Length)
+            {
+                var c = s[cursor];
+                if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '=' || c == '>' || c == ',')
+                    cursor++;
+                else
+                    return cursor;
+            }
+
+            if (exceptionIfEnded == false)
+                return cursor;
+            else
+                throw new ArgumentException(s);
+        }
+
+        private static int SkipWhile(string s, int cursor, char c, bool exceptionIfEnded)
+        {
+            while (cursor < s.Length)
+            {
+                if (s[cursor] == '\\')
+                    cursor += 2;
+                else if (s[cursor] != c)
+                    cursor++;
+                else
+                    return cursor;
+            }
+
+            if (exceptionIfEnded == false)
+                return cursor;
+            else
+                throw new ArgumentException(s);
+        }
+
+        private static string Decode(string s, bool nullable = false)
+        {
+            if (nullable && string.Equals(s, "NULL", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var sb = new StringBuilder(s.Length);
+            for (int i = 0; i < s.Length; i++)
+            {
+                if (s[i] != '\\')
+                    sb.Append(s[i]);
+                else
+                {
+                    i++;
+
+                    switch (s[i])
+                    {
+                        case '"':
+                            sb.Append('"');
+                            break;
+                        case '\\':
+                            sb.Append('\\');
+                            break;
+                        case 'n':
+                            sb.Append('\n');
+                            break;
+                        case 't':
+                            sb.Append('\t');
+                            break;
+                        case 'r':
+                            sb.Append('\r');
+                            break;
+                        case 'b':
+                            sb.Append('\b');
+                            break;
+                        case 'f':
+                            sb.Append('\f');
+                            break;
+                        case 'u':
+                            char a = s[++i];
+                            char b = s[++i];
+                            char c = s[++i];
+                            char d = s[++i];
+                            sb.Append((char)((Hex(a) * 4096) + (Hex(b) * 256) + (Hex(c) * 16) + (Hex(d))));
+                            break;
+                        default:
+                            throw new NotSupportedException();
+                    }
+                }
+            }
+            return sb.ToString();
+        }
+
+        private static int Hex(char c)
+        {
+            return
+                ('0' <= c && c <= '9') ?
+                    c - '0' :
+                ('a' <= c && c <= 'f') ?
+                    c - 'a' + 10 :
+                    c - 'A' + 10;
+        }
+        #endregion
+
+        #region Get
         public string Get(string key)
         {
             for (int i = 0; i < keys.Length; i++)
@@ -125,19 +320,19 @@ namespace Halak
             return result;
         }
 
-        public Hstore Concat(Hstore hstore)
+        public bool TryGetValue(string key, out string value)
         {
-            var mutableItems = CreateMutableItems(hstore.keys.Length);
-            for (int i = 0; i < hstore.keys.Length; i++)
+            var index = IndexOf(key);
+            if (index != -1)
             {
-                var index = IndexOf(hstore.keys[i]);
-                if (index != -1)
-                    mutableItems[index] = new KeyValuePair<string, string>(hstore.keys[i], hstore.values[i]);
-                else
-                    mutableItems.Add(new KeyValuePair<string, string>(hstore.keys[i], hstore.values[i]));
+                value = values[index];
+                return true;
             }
-
-            return new Hstore(mutableItems);
+            else
+            {
+                value = default(string);
+                return false;
+            }
         }
 
         public bool Contains(Hstore hstore)
@@ -161,7 +356,7 @@ namespace Halak
         {
             var index = IndexOf(key);
             if (index != -1)
-                return values[index] != null;
+                return !Equals(values[index], null);
             else
                 return false;
         }
@@ -188,6 +383,11 @@ namespace Halak
             return false;
         }
 
+        public bool ContainsKey(string key)
+        {
+            return Contains(key);
+        }
+
         private int IndexOf(string key)
         {
             for (int i = 0; i < keys.Length; i++)
@@ -202,10 +402,27 @@ namespace Halak
         private int IndexOf(string key, string value)
         {
             var index = IndexOf(key);
-            if (index != -1 && values[index] == value)
+            if (index != -1 && Equals(values[index], value))
                 return index;
             else
                 return -1;
+        }
+        #endregion
+
+        #region Manipulate
+        public Hstore Concat(Hstore hstore)
+        {
+            var mutableItems = CreateMutableItems(hstore.keys.Length);
+            for (int i = 0; i < hstore.keys.Length; i++)
+            {
+                var index = IndexOf(hstore.keys[i]);
+                if (index != -1)
+                    mutableItems[index] = new KeyValuePair<string, string>(hstore.keys[i], hstore.values[i]);
+                else
+                    mutableItems.Add(new KeyValuePair<string, string>(hstore.keys[i], hstore.values[i]));
+            }
+
+            return new Hstore(mutableItems);
         }
 
         public Hstore Delete(string key)
@@ -226,15 +443,9 @@ namespace Halak
             var mutableItems = CreateMutableItems();
             for (int i = 0; i < keys.Length; i++)
             {
-                var key = keys[i];
-                for (int k = 0; k < mutableItems.Count; k++)
-                {
-                    if (mutableItems[k].Key == key)
-                    {
-                        mutableItems.RemoveAt(k);
-                        break;
-                    }
-                }
+                var index = IndexOf(mutableItems, keys[i]);
+                if (index != -1)
+                    mutableItems.RemoveAt(index);
             }
 
             return new Hstore(mutableItems);
@@ -245,18 +456,15 @@ namespace Halak
             var mutableItems = CreateMutableItems();
             for (int i = 0; i < hstore.keys.Length; i++)
             {
-                var key = hstore.keys[i];
-                for (int k = 0; k < mutableItems.Count; k++)
-                {
-                    if (mutableItems[k].Key == key && mutableItems[k].Value == hstore.values[i])
-                    {
-                        mutableItems.RemoveAt(k);
-                        break;
-                    }
-                }
+                var index = IndexOf(mutableItems, keys[i]);
+                if (index != -1 && Equals(mutableItems[index], hstore.values[i]))
+                    mutableItems.RemoveAt(index);
             }
 
-            return new Hstore(mutableItems);
+            if (mutableItems.Count != keys.Length)
+                return new Hstore(mutableItems);
+            else
+                return this;
         }
 
         public Hstore Replace(Hstore hstore)
@@ -304,7 +512,55 @@ namespace Halak
                 }
             }
 
-            return new Hstore(mutableItems);
+            if (mutableItems.Count > 0)
+                return new Hstore(mutableItems);
+            else
+                return Empty;
+        }
+
+        private List<KeyValuePair<string, string>> CreateMutableItems(int capacityIncrement = 0)
+        {
+            var mutableItems = new List<KeyValuePair<string, string>>(keys.Length + capacityIncrement);
+            for (int i = 0; i < keys.Length; i++)
+                mutableItems.Add(new KeyValuePair<string, string>(keys[i], values[i]));
+
+            return mutableItems;
+        }
+
+        private static int IndexOf(List<KeyValuePair<string, string>> source, string key)
+        {
+            for (int i = 0; i < source.Count; i++)
+            {
+                if (source[i].Key == key)
+                    return i;
+            }
+
+            return -1;
+        }
+        #endregion
+
+        #region Compare
+        public override bool Equals(object obj)
+        {
+            var hstore = obj as Hstore;
+            if (hstore != null)
+                return Equals(hstore);
+            else
+                return false;
+        }
+
+        public bool Equals(Hstore other)
+        {
+            if (keys.Length != other.keys.Length)
+                return false;
+
+            for (int i = 0; i < other.keys.Length; i++)
+            {
+                if (IndexOf(other.keys[i], other.values[i]) == -1)
+                    return false;
+            }
+
+            return true;
         }
 
         public override int GetHashCode()
@@ -313,23 +569,34 @@ namespace Halak
             for (int i = 0; i < keys.Length; i++)
             {
                 hashCode += keys[i].GetHashCode();
-                hashCode += values[i].GetHashCode();
+                hashCode += values[i] != null ? values[i].GetHashCode() : 0;
             }
 
             return hashCode;
         }
-
+        #endregion
+        
+        #region Encode
         public override string ToString()
         {
-            var sb = new StringBuilder(CalculateCapacity(7) + 8);  // 7 means ""=>"", 8 means ::hstore
+            var sb = new StringBuilder(CalculateCapacity(7) + 10);  // 7 means ""=>"", 10 means ''::hstore
+            sb.Append('\'');
+            if (keys.Length > 0)
+            {
+                Encode(sb, keys[0]);
+                sb.Append("=>");
+                Encode(sb, values[0]);
+            }
 
-            sb.Append("::hstore");
+            for (int i = 1; i < keys.Length; i++)
+            {
+                sb.Append(',');
+                Encode(sb, keys[i]);
+                sb.Append("=>");
+                Encode(sb, values[i]);
+            }
+            sb.Append("'::hstore");
             return sb.ToString();
-        }
-
-        private static bool ContainsSpecialCharacter(string s)
-        {
-            throw new NotImplementedException(); 
         }
 
         public string[] ToArray()
@@ -364,20 +631,17 @@ namespace Halak
             sb.Append('{');
             if (keys.Length > 0)
             {
-                sb.Append('"');
-                sb.Append(EscapeForJson(keys[0]));
-                sb.Append("\":\"");
-                sb.Append(EscapeForJson(values[0]));
-                sb.Append('"');
+                EncodeJson(sb, keys[0]);
+                sb.Append(':');
+                EncodeJson(sb, values[0]);
             }
 
             for (int i = 1; i < keys.Length; i++)
             {
-                sb.Append(",\"");
-                sb.Append(EscapeForJson(keys[i]));
-                sb.Append("\":\"");
-                sb.Append(EscapeForJson(values[i]));
-                sb.Append('"');
+                sb.Append(',');
+                EncodeJson(sb, keys[i]);
+                sb.Append(':');
+                EncodeJson(sb, values[i]);
             }
             sb.Append('}');
 
@@ -391,41 +655,178 @@ namespace Halak
             sb.Append('{');
             if (keys.Length > 0)
             {
-                sb.Append('"');
-                sb.Append(EscapeForJson(keys[0]));
-                sb.Append("\":\"");
-                sb.Append(EscapeForJson(values[0]));
-                sb.Append('"');
+                EncodeJson(sb, keys[0]);
+                sb.Append(':');
+                EncodeJsonLoose(sb, values[0]);
             }
 
             for (int i = 1; i < keys.Length; i++)
             {
-                sb.Append(",\"");
-                sb.Append(EscapeForJson(keys[i]));
-                sb.Append("\":");
-                sb.Append(EncodeJsonValue(values[i]));
+                sb.Append(',');
+                EncodeJson(sb, keys[i]);
+                sb.Append(':');
+                EncodeJsonLoose(sb, values[i]);
             }
             sb.Append('}');
 
             return sb.ToString();
         }
 
-        public KeyValuePair<string, string>[] Each()
+        private static void Encode(StringBuilder sb, string s)
         {
-            var result = new KeyValuePair<string, string>[keys.Length];
-            for (int i = 0; i < keys.Length; i++)
-                result[i] = new KeyValuePair<string, string>(keys[i], values[i]);
+            if (s == null)
+            {
+                sb.Append("NULL");
+                return;
+            }
 
-            return result;
+            if (s.Length == 0)
+            {
+                sb.Append("\"\"");
+                return;
+            }
+
+            var wrapNeeded = false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                var c = s[i];
+                if (c == '"' || c == '\'' || c == ',' || c == '=' || c == ' ' || c == '\r' || c == '\n' || c == '\t')
+                {
+                    wrapNeeded = true;
+                    break;
+                }
+            }
+
+            if (wrapNeeded)
+                sb.Append('"');
+
+            for (int i = 0; i < s.Length; i++)
+            {
+                switch (s[i])
+                {
+                    case '"':
+                        sb.Append('\\');
+                        sb.Append('"');
+                        break;
+                    case '\\':
+                        sb.Append('\\');
+                        sb.Append('\\');
+                        break;
+                    case '\n':
+                        sb.Append('\\');
+                        sb.Append('n');
+                        break;
+                    case '\t':
+                        sb.Append('\\');
+                        sb.Append('t');
+                        break;
+                    case '\r':
+                        sb.Append('\\');
+                        sb.Append('r');
+                        break;
+                    case '\b':
+                        sb.Append('\\');
+                        sb.Append('b');
+                        break;
+                    case '\f':
+                        sb.Append('\\');
+                        sb.Append('f');
+                        break;
+                    case '\'':
+                        sb.Append('\'');
+                        sb.Append('\'');
+                        break;
+                    default:
+                        sb.Append(s[i]);
+                        break;
+                }
+            }
+
+            if (wrapNeeded)
+                sb.Append('"');
         }
 
-        private List<KeyValuePair<string, string>> CreateMutableItems(int capacityIncrement = 0)
+        private static void EncodeJson(StringBuilder sb, string s)
         {
-            var mutableItems = new List<KeyValuePair<string, string>>(keys.Length + capacityIncrement);
-            for (int i = 0; i < keys.Length; i++)
-                mutableItems.Add(new KeyValuePair<string, string>(keys[i], values[i]));
+            if (s != null)
+            {
+                sb.Append('"');
+                for (int i = 0; i < s.Length; i++)
+                {
+                    switch (s[i])
+                    {
+                        case '"':
+                            sb.Append('\\');
+                            sb.Append('"');
+                            break;
+                        case '\\':
+                            sb.Append('\\');
+                            sb.Append('\\');
+                            break;
+                        case '\n':
+                            sb.Append('\\');
+                            sb.Append('n');
+                            break;
+                        case '\t':
+                            sb.Append('\\');
+                            sb.Append('t');
+                            break;
+                        case '\r':
+                            sb.Append('\\');
+                            sb.Append('r');
+                            break;
+                        case '\b':
+                            sb.Append('\\');
+                            sb.Append('b');
+                            break;
+                        case '\f':
+                            sb.Append('\\');
+                            sb.Append('f');
+                            break;
+                        default:
+                            sb.Append(s[i]);
+                            break;
+                    }
+                }
+                sb.Append('"');
+            }
+            else
+                sb.Append("null");
+        }
 
-            return mutableItems;
+        private static void EncodeJsonLoose(StringBuilder sb, string s)
+        {
+            if (s == null)
+            {
+                sb.Append("null");
+                return;
+            }
+
+            if (s.Length == 1)
+            {
+                if (s[0] == 't')
+                {
+                    sb.Append("true");
+                    return;
+                }
+                else if (s[0] == 'f')
+                {
+                    sb.Append("false");
+                    return;
+                }
+            }
+
+            if (PredeciateNumber(s))
+            {
+                var number = 0.0;
+                if (double.TryParse(s, out number))
+                {
+                    sb.Append(s);
+                    return;
+                }
+            }
+
+            EncodeJson(sb, s);
         }
 
         private int CalculateCapacity(int defaultCapacityPerEntry)
@@ -440,23 +841,103 @@ namespace Halak
             return capacity;
         }
 
-        private static string EscapeForJson(string s)
+        private static bool PredeciateNumber(string s)
         {
-            // TODO: 
-            return s;
+            if (s.Length > 0 && s[0] == '0')
+                return false;
+
+            for (int i = 0; i < s.Length; i++)
+            {
+                var c = s[i];
+                if (c < '0' || '9' < c)
+                {
+                    switch (c)
+                    {
+                        case '+':
+                        case '-':
+                        case '.':
+                        case ',':
+                            break;
+                        default:
+                            return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+        #endregion
+
+        #region Enumerate
+        public KeyValuePair<string, string>[] Each()
+        {
+            var result = new KeyValuePair<string, string>[keys.Length];
+            for (int i = 0; i < keys.Length; i++)
+                result[i] = new KeyValuePair<string, string>(keys[i], values[i]);
+
+            return result;
         }
 
-        private static string EncodeJsonValue(string s)
+        IEnumerator IEnumerable.GetEnumerator()
         {
-            // TODO: s의 형태에 따라서 숫자, 문자열, 불린형을 구분하여 Json 값에 맞게 인코딩한다.
-            return '"' + s + '"';
+            return GetEnumerator();
         }
 
-        private static Serialize BuildSerializeMethod(Type t)
+        public IEnumerator<KeyValuePair<string, string>> GetEnumerator()
         {
-            throw new NotImplementedException();
+            for (int i = 0; i < keys.Length; i++)
+                yield return new KeyValuePair<string, string>(keys[i], values[i]);
         }
+        #endregion
 
+        #region Convert
+        private static Convert BuildConvertMethod(Type t)
+        {
+            /*
+            var source = (T)sourceParameter;
+
+            return new Tuple<string[], string[]>(
+                new string[N] { "A", "B", ... "Z" },
+                new string[N] { source.A, source.B, ... , source.Z });
+            */
+
+            var sourceParameter = Expression.Parameter(typeof(object));
+
+            var properties = t.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.GetProperty);
+            var toStringMethod = typeof(object).GetMethod(nameof(object.ToString), Type.EmptyTypes);
+            var dateTimeToStringMethod = typeof(DateTime).GetMethod(nameof(object.ToString), new Type[] { typeof(string) });
+
+            var source = Expression.Variable(t);
+            var keys = new List<Expression>(properties.Length);
+            var values = new List<Expression>(properties.Length);
+            for (int i = 0; i < properties.Length; i++)
+            {
+                if (properties[i].GetCustomAttribute<NonSerializedAttribute>() != null)
+                    continue;
+
+                keys.Add(Expression.Constant(properties[i].Name));
+                if (properties[i].PropertyType == typeof(DateTime))
+                    values.Add(Expression.Call(Expression.Property(source, properties[i]), dateTimeToStringMethod, Expression.Constant("O")));
+                else
+                    values.Add(Expression.Call(Expression.Property(source, properties[i]), toStringMethod));
+            }
+
+            var variables = new ParameterExpression[] { source };
+            var stringPairType = typeof(Tuple<string[], string[]>);
+            var stringPairConstructor = stringPairType.GetConstructor(new Type[] { typeof(string[]), typeof(string[]) });
+            var statements = new Expression[]
+            {
+                Expression.Assign(source, Expression.Convert(sourceParameter, source.Type)),
+                Expression.New(stringPairConstructor,
+                    Expression.NewArrayInit(typeof(string), keys),
+                    Expression.NewArrayInit(typeof(string), values)),
+            };
+
+            return Expression.Lambda<Convert>(Expression.Block(variables, statements), sourceParameter).Compile();
+        }
+        #endregion
+
+        #region Value
         public struct Value
         {
             internal readonly string value;
@@ -466,75 +947,22 @@ namespace Halak
                 this.value = value;
             }
             
-            public static implicit operator Value(bool value)
-            {
-                return new Value(value ? "t" : "f");
-            }
-
-            public static implicit operator Value(sbyte value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(byte value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(char value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(short value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(ushort value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(int value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(uint value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(long value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(ulong value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(float value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(double value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(decimal value)
-            {
-                return new Value(value.ToString());
-            }
-
-            public static implicit operator Value(string value)
-            {
-                return new Value(value);
-            }
+            public static implicit operator Value(bool value) => new Value(value ? "t" : "f");
+            public static implicit operator Value(sbyte value) => new Value(value.ToString());
+            public static implicit operator Value(byte value) => new Value(value.ToString());
+            public static implicit operator Value(char value) => new Value(value.ToString());
+            public static implicit operator Value(short value) => new Value(value.ToString());
+            public static implicit operator Value(ushort value) => new Value(value.ToString());
+            public static implicit operator Value(int value) => new Value(value.ToString());
+            public static implicit operator Value(uint value) => new Value(value.ToString());
+            public static implicit operator Value(long value) => new Value(value.ToString());
+            public static implicit operator Value(ulong value) => new Value(value.ToString());
+            public static implicit operator Value(float value) => new Value(value.ToString());
+            public static implicit operator Value(double value) => new Value(value.ToString());
+            public static implicit operator Value(decimal value) => new Value(value.ToString());
+            public static implicit operator Value(string value) => new Value(value);
+            public static implicit operator Value(DateTime v) => new Value(v.ToString("O"));
         }
+        #endregion
     }
 }

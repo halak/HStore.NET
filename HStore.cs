@@ -9,14 +9,14 @@ using System.Text;
 namespace Halak
 {
     /// <summary>
-    /// Lightweight Hstore class for Postgresql.
+    /// Lightweight HStore class for Postgresql.
     /// </summary>
     /// <see cref="http://www.postgresql.org/docs/9.4/static/hstore.html"/>
-    public sealed class Hstore : IReadOnlyDictionary<string, string>, IEquatable<Hstore>
+    public sealed class HStore : IReadOnlyDictionary<string, string>, IEquatable<HStore>
     {
         private delegate Tuple<string[], string[]> Convert(object items);
         
-        public static readonly Hstore Empty = new Hstore();
+        public static readonly HStore Empty = new HStore();
         private static readonly ConcurrentDictionary<Type, Convert> convertMethods;
 
         private readonly string[] keys;
@@ -36,13 +36,13 @@ namespace Halak
         public string this[string key] => Get(key);
 
         #region Constructors
-        public Hstore()
+        public HStore()
         {
             keys = new string[0];
             values = new string[0];
         }
 
-        public Hstore(IDictionary<string, Value> items)
+        public HStore(IDictionary<string, Value> items)
         {
             var index = 0;
             keys = new string[items.Count];
@@ -58,7 +58,7 @@ namespace Halak
             }
         }
 
-        public Hstore(IDictionary<string, object> items)
+        public HStore(IDictionary<string, object> items)
         {
             var index = 0;
             keys = new string[items.Count];
@@ -74,7 +74,7 @@ namespace Halak
             }
         }
 
-        public Hstore(IDictionary<string, string> items)
+        public HStore(IDictionary<string, string> items)
         {
             var index = 0;
             keys = new string[items.Count];
@@ -90,20 +90,20 @@ namespace Halak
             }
         }
 
-        public Hstore(object items)
+        public HStore(object items)
         {
             var keyValues = convertMethods.GetOrAdd(items.GetType(), BuildConvertMethod)(items);
             keys = keyValues.Item1;
             values = keyValues.Item2;
         }
 
-        private Hstore(string[] keys, string[] values)
+        private HStore(string[] keys, string[] values)
         {
             this.keys = keys;
             this.values = values;
         }
 
-        private Hstore(List<KeyValuePair<string, string>> mutableItems)
+        private HStore(List<KeyValuePair<string, string>> mutableItems)
         {
             keys = new string[mutableItems.Count];
             values = new string[mutableItems.Count];
@@ -115,14 +115,14 @@ namespace Halak
             }
         }
 
-        static Hstore()
+        static HStore()
         {
             convertMethods = new ConcurrentDictionary<Type, Convert>();
         }
         #endregion
 
         #region Parse
-        public static Hstore Parse(string s)
+        public static HStore Parse(string s)
         {
             s = s.Trim();
 
@@ -184,10 +184,10 @@ namespace Halak
                 cursor = SkipWhiteSpaces(s, cursor, false);
             }
 
-            return new Hstore(mutableItems);
+            return new HStore(mutableItems);
         }
 
-        public static bool TryParse(string s, out Hstore hstore)
+        public static bool TryParse(string s, out HStore hstore)
         {
             try
             {
@@ -335,7 +335,7 @@ namespace Halak
             }
         }
 
-        public bool Contains(Hstore hstore)
+        public bool Contains(HStore hstore)
         {
             for (int i = 0; i < hstore.keys.Length; i++)
             {
@@ -410,7 +410,7 @@ namespace Halak
         #endregion
 
         #region Manipulate
-        public Hstore Concat(Hstore hstore)
+        public HStore Concat(HStore hstore)
         {
             var mutableItems = CreateMutableItems(hstore.keys.Length);
             for (int i = 0; i < hstore.keys.Length; i++)
@@ -422,23 +422,23 @@ namespace Halak
                     mutableItems.Add(new KeyValuePair<string, string>(hstore.keys[i], hstore.values[i]));
             }
 
-            return new Hstore(mutableItems);
+            return new HStore(mutableItems);
         }
 
-        public Hstore Delete(string key)
+        public HStore Delete(string key)
         {
             var index = IndexOf(key);
             if (index != -1)
             {
                 var mutableItems = CreateMutableItems();
                 mutableItems.RemoveAt(index);
-                return new Hstore(mutableItems);
+                return new HStore(mutableItems);
             }
             else
                 return this;
         }
 
-        public Hstore Delete(params string[] keys)
+        public HStore Delete(params string[] keys)
         {
             var mutableItems = CreateMutableItems();
             for (int i = 0; i < keys.Length; i++)
@@ -448,10 +448,10 @@ namespace Halak
                     mutableItems.RemoveAt(index);
             }
 
-            return new Hstore(mutableItems);
+            return new HStore(mutableItems);
         }
 
-        public Hstore Delete(Hstore hstore)
+        public HStore Delete(HStore hstore)
         {
             var mutableItems = CreateMutableItems();
             for (int i = 0; i < hstore.keys.Length; i++)
@@ -462,12 +462,12 @@ namespace Halak
             }
 
             if (mutableItems.Count != keys.Length)
-                return new Hstore(mutableItems);
+                return new HStore(mutableItems);
             else
                 return this;
         }
 
-        public Hstore Replace(Hstore hstore)
+        public HStore Replace(HStore hstore)
         {
             var mutableKeys = new string[keys.Length];
             var mutableValues = new string[values.Length];
@@ -491,12 +491,12 @@ namespace Halak
             }
 
             if (modified)
-                return new Hstore(mutableKeys, mutableValues);
+                return new HStore(mutableKeys, mutableValues);
             else
                 return this;
         }
 
-        public Hstore Slice(params string[] keys)
+        public HStore Slice(params string[] keys)
         {
             var mutableItems = new List<KeyValuePair<string, string>>(keys.Length);
             for (int i = 0; i < keys.Length; i++)
@@ -513,7 +513,7 @@ namespace Halak
             }
 
             if (mutableItems.Count > 0)
-                return new Hstore(mutableItems);
+                return new HStore(mutableItems);
             else
                 return Empty;
         }
@@ -542,14 +542,14 @@ namespace Halak
         #region Compare
         public override bool Equals(object obj)
         {
-            var hstore = obj as Hstore;
+            var hstore = obj as HStore;
             if (hstore != null)
                 return Equals(hstore);
             else
                 return false;
         }
 
-        public bool Equals(Hstore other)
+        public bool Equals(HStore other)
         {
             if (keys.Length != other.keys.Length)
                 return false;

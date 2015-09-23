@@ -356,7 +356,7 @@ namespace Halak
         {
             var index = IndexOf(key);
             if (index != -1)
-                return !Equals(values[index], null);
+                return !string.Equals(values[index], null);
             else
                 return false;
         }
@@ -402,7 +402,7 @@ namespace Halak
         private int IndexOf(string key, string value)
         {
             var index = IndexOf(key);
-            if (index != -1 && Equals(values[index], value))
+            if (index != -1 && string.Equals(values[index], value))
                 return index;
             else
                 return -1;
@@ -457,7 +457,7 @@ namespace Halak
             for (int i = 0; i < hstore.keys.Length; i++)
             {
                 var index = IndexOf(mutableItems, keys[i]);
-                if (index != -1 && Equals(mutableItems[index], hstore.values[i]))
+                if (index != -1 && string.Equals(mutableItems[index].Value, hstore.values[i]))
                     mutableItems.RemoveAt(index);
             }
 

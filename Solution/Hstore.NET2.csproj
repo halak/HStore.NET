@@ -7,8 +7,8 @@
     <ProjectGuid>{5ED4E208-796D-483F-9F0C-FBA072E6EC90}</ProjectGuid>
     <OutputType>Exe</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>Hstore.NET</RootNamespace>
-    <AssemblyName>Hstore.NET</AssemblyName>
+    <RootNamespace>HStore.NET</RootNamespace>
+    <AssemblyName>HStore.NET</AssemblyName>
     <TargetFrameworkVersion>v4.6</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
@@ -44,8 +44,8 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\Hstore.cs">
-      <Link>Hstore.cs</Link>
+    <Compile Include="..\HStore.cs">
+      <Link>HStore.cs</Link>
     </Compile>
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

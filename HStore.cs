@@ -24,11 +24,8 @@ namespace Halak
 
         public int Count => keys.Length;
 
-        public string[] Keys => keys;
-        public string[] Values => values;
-
-        public HashSet<string> KeysAsSet => new HashSet<string>(keys);
-        public HashSet<string> ValuesAsSet => new HashSet<string>(values);
+        public string[] Keys => Clone(keys);
+        public string[] Values => Clone(values);
 
         IEnumerable<string> IReadOnlyDictionary<string, string>.Keys => keys;
         IEnumerable<string> IReadOnlyDictionary<string, string>.Values => values;
@@ -887,6 +884,13 @@ namespace Halak
         {
             for (int i = 0; i < keys.Length; i++)
                 yield return new KeyValuePair<string, string>(keys[i], values[i]);
+        }
+
+        private static string[] Clone(string[] items)
+        {
+            var clone = new string[items.Length];
+            items.CopyTo(clone, 0);
+            return clone;
         }
         #endregion
 

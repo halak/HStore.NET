@@ -9,7 +9,8 @@ using System.Text;
 namespace Halak
 {
     /// <summary>
-    /// Lightweight HStore class for Postgresql.
+    /// Lightweight Postgresql HStore class.
+    /// This is immutable type.
     /// </summary>
     /// <see cref="http://www.postgresql.org/docs/9.4/static/hstore.html"/>
     public sealed class HStore : IReadOnlyDictionary<string, string>, IEquatable<HStore>
